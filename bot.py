@@ -1,22 +1,32 @@
 import os
 import logging
+from threading import Thread
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from supabase import create_client, Client
 
-# إعداد التسجيل
+# --- إعداد خادم Web بسيط لمنع نوم البوت ---
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+# --- إعداد التسجيل ---
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# قراءة المتغيرات من بيئة التشغيل (Railway / Environment Variables)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# إعداد عميل Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """الرسالة الترحيبية"""
     await update.message.reply_text(
         "أهلاً بك في بوت **علاماتي - هندسة تقنية - بيئة** 🌿\n\n"
         "يرجى إرسال **اسمك الثلاثي** أو **رقمك الجامعي** لمشاهدة علاماتك.",
@@ -24,7 +34,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def build_student_keyboard(student_id, student_grades):
-    """بناء لوحة الأزرار الشفافة"""
     keyboard = [
         [InlineKeyboardButton(text="📋 اجلب كل علاماتي", callback_data=f"all_{student_id}")]
     ]
@@ -34,11 +43,9 @@ def build_student_keyboard(student_id, student_grades):
     return InlineKeyboardMarkup(keyboard)
 
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """البحث عن الطالب في Supabase"""
     query_text = update.message.text.strip()
 
     try:
-        # البحث بالرقم الجامعي (طابق تام) أو بالاسم (بحث جزئي غير حساس للحالة)
         response = supabase.table("grades").select("*").or_(
             f"student_id.eq.{query_text},student_name.ilike.%{query_text}%"
         ).execute()
@@ -52,9 +59,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         student_name = results[0]['student_name']
         student_id = results[0]['student_id']
 
-        # جلب جميع مواد الطالب
         student_grades = [r for r in results if r['student_id'] == student_id]
-        
         reply_markup = build_student_keyboard(student_id, student_grades)
 
         await update.message.reply_text(
@@ -69,14 +74,12 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("عذراً، حدث خطأ أثناء الاتصال بقاعدة البيانات.")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """التعامل مع الأزرار الشفافة"""
     query = update.callback_query
     await query.answer()
 
     data = query.data
 
     try:
-        # 1. عرض كل العلامات
         if data.startswith("all_"):
             student_id = data.split("_")[1]
             response = supabase.table("grades").select("*").eq("student_id", student_id).execute()
@@ -108,7 +111,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await query.edit_message_text(text=message, reply_markup=reply_markup, parse_mode="Markdown")
 
-        # 2. عرض مادة معينة
         elif data.startswith("sub_"):
             record_id = int(data.split("_")[1])
             response = supabase.table("grades").select("*").eq("id", record_id).execute()
@@ -134,7 +136,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 await query.edit_message_text(text=message, reply_markup=reply_markup, parse_mode="Markdown")
 
-        # 3. العودة للقائمة
         elif data.startswith("back_"):
             student_id = data.split("_")[1]
             response = supabase.table("grades").select("*").eq("student_id", student_id).execute()
@@ -153,6 +154,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("حدث خطأ أثناء معالجة الطلب.")
 
 def main():
+    # تشغيل سيرفر الويب في خلفية المنشور لإبقاء الـ Port مفتوحاً
+    server_thread = Thread(target=run_web_server)
+    server_thread.daemon = True
+    server_thread.start()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
